@@ -2,6 +2,7 @@ using Azure.Identity;
 using Microsoft.EntityFrameworkCore;
 using backend.Data;
 using System;
+using Prometheus;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -51,12 +52,16 @@ builder.Services.AddCors(options =>
 
 var app = builder.Build();
 
+app.UseHttpMetrics();   // collect HTTP request metrics
+
 app.UseSwagger();
 app.UseSwaggerUI();
 
 app.UseCors("AllowFrontend");
 app.UseAuthorization();
 app.MapControllers();
+
+app.MapMetrics("/metrics");   // expose Prometheus endpoint
 
 app.MapGet("/health", () => Results.Ok("API healthy"));
 
