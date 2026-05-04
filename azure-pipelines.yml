@@ -245,7 +245,7 @@ stages:
     - script: |
         set -e
 
-        IMAGE_TAG=$(Build.BuildId)
+        echo "TAG=$TAG"
         echo "PAT length: ${#GITOPS_PAT}"
         git config --global user.email "azuredevops@local"
         git config --global user.name "Azure DevOps Pipeline"
@@ -256,11 +256,11 @@ stages:
 
         
         if [ "$BACKEND_CHANGED" = "true" ]; then
-          yq -i '.backend.image.tag = strenv(IMAGE_TAG)' $(VALUES_FILE)
+          yq -i '.backend.image.tag = strenv(TAG)' $(VALUES_FILE)
         fi
 
         if [ "$FRONTEND_CHANGED" = "true" ]; then
-          yq -i '.frontend.image.tag = strenv(IMAGE_TAG)' $(VALUES_FILE)
+          yq -i '.frontend.image.tag = strenv(TAG)' $(VALUES_FILE)
         fi
 
         git add $(VALUES_FILE)
@@ -270,12 +270,15 @@ stages:
           exit 0
         fi
 
-        git commit -m "Update image tag to $IMAGE_TAG"
+        git commit -m "Update image tag to $TAG"
         git remote set-url origin https://lovelu99:${GITOPS_PAT}@github.com/lovelu99/azure-devops-three-tier-gitops.git
         git push origin main
       displayName: Update GitOps repo
       env:
+        TAG: $(tag)
         GITOPS_PAT: $(GITOPS_PAT)
+        BACKEND_CHANGED: $(BACKEND_CHANGED)
+        FRONTEND_CHANGED: $(FRONTEND_CHANGED)
 
 
 # - stage: Build
