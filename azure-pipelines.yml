@@ -274,6 +274,8 @@ stages:
         git remote set-url origin https://lovelu99:${GITOPS_PAT}@github.com/lovelu99/azure-devops-three-tier-gitops.git
         git push origin main
       displayName: Update GitOps repo
+      env:
+        GITOPS_PAT: $(GITOPS_PAT)
 
 
 # - stage: Build
