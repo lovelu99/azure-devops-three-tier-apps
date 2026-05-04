@@ -246,7 +246,7 @@ stages:
         set -e
 
         IMAGE_TAG=$(Build.BuildId)
-
+        echo "PAT length: ${#GITOPS_PAT}"
         git config --global user.email "azuredevops@local"
         git config --global user.name "Azure DevOps Pipeline"
 
