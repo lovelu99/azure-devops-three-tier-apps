@@ -250,8 +250,8 @@ stages:
         git config --global user.email "azuredevops@local"
         git config --global user.name "Azure DevOps Pipeline"
 
-        git clone https://lovelu99:$GITOPS_PAT@github.com/lovelu99/azure-devops-three-tier-gitops.git
-
+        
+        git clone https://lovelu99:${GITOPS_PAT}@github.com/lovelu99/azure-devops-three-tier-gitops.git
         cd azure-devops-three-tier-gitops/$(GITOPS_PATH)
 
         
@@ -271,6 +271,7 @@ stages:
         fi
 
         git commit -m "Update image tag to $IMAGE_TAG"
+        git remote set-url origin https://lovelu99:${GITOPS_PAT}@github.com/lovelu99/azure-devops-three-tier-gitops.git
         git push origin main
       displayName: Update GitOps repo
 
