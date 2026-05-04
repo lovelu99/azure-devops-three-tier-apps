@@ -22,7 +22,7 @@ variables:
   aksCluster: 'aks-3tier'
   GITOPS_REPO: https://github.com/lovelu99/azure-devops-three-tier-gitops.git
   GITOPS_PATH: apps/three-tier
-  VALUES_FILE: values-dev.yaml
+  VALUES_FILE: values.yaml
 
 stages:
 - stage: DetectChanges
