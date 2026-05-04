@@ -237,6 +237,10 @@ stages:
     )
   jobs:
   - job: update_gitops
+    variables:
+      BACKEND_CHANGED: $[ stageDependencies.DetectChanges.detect.outputs['detectChanges.backendChanged'] ]
+      FRONTEND_CHANGED: $[ stageDependencies.DetectChanges.detect.outputs['detectChanges.frontendChanged'] ]
+
     steps:
     - script: |
         set -e
@@ -250,9 +254,7 @@ stages:
 
         cd azure-devops-three-tier-gitops/$(GITOPS_PATH)
 
-        BACKEND_CHANGED="$(dependencies.DetectChanges.outputs['detect.detectChanges.backendChanged'])"
-        FRONTEND_CHANGED="$(dependencies.DetectChanges.outputs['detect.detectChanges.frontendChanged'])"
-
+        
         if [ "$BACKEND_CHANGED" = "true" ]; then
           yq -i '.backend.image.tag = strenv(IMAGE_TAG)' $(VALUES_FILE)
         fi
