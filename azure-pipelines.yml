@@ -66,81 +66,81 @@ stages:
     steps:
     - checkout: self
     - script: |
-          dotnet tool install --global dotnet-sonarscanner || true
-          export PATH="$PATH:$HOME/.dotnet/tools"
+        dotnet tool install --global dotnet-sonarscanner || true
+        export PATH="$PATH:$HOME/.dotnet/tools"
 
-          dotnet sonarscanner begin \
-            /k:"three-tier-backend" \
-            /n:"three-tier-backend" \
-            /d:sonar.sources="backend" \
-            /d:sonar.exclusions="frontend/**,helm/**,k8s/**,pipelines/**,**/bin/**,**/obj/**" \
-            /d:sonar.host.url="$(SONAR_HOST_URL)" \
-            /d:sonar.token="$(SONAR_TOKEN)"
+        dotnet sonarscanner begin \
+          /k:"three-tier-backend" \
+          /n:"three-tier-backend" \
+          /d:sonar.sources="backend" \
+          /d:sonar.exclusions="frontend/**,helm/**,k8s/**,pipelines/**,**/bin/**,**/obj/**" \
+          /d:sonar.host.url="$(SONAR_HOST_URL)" \
+          /d:sonar.token="$(SONAR_TOKEN)"
 
-          dotnet restore backend/backend/backend/backend.csproj
-          dotnet build backend/backend/backend/backend.csproj --configuration Release --no-restore
+        dotnet restore backend/backend/backend/backend.csproj
+        dotnet build backend/backend/backend/backend.csproj --configuration Release --no-restore
 
-          dotnet sonarscanner end \
-            /d:sonar.token="$(SONAR_TOKEN)"
-        displayName: SonarQube scan backend
+        dotnet sonarscanner end \
+          /d:sonar.token="$(SONAR_TOKEN)"
+      displayName: SonarQube scan backend
+        
+    - script: |
+        sleep 10
+        STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-backend" | jq -r '.projectStatus.status')
+        echo "Quality Gate Status: $STATUS"
+        if [ "$STATUS" != "OK" ]; then
+          echo "Quality Gate Failed"
+          exit 1
+        fi
+      displayName: Enforce Sonar Quality Gate
+        
+    - script: |
+        trivy fs --exit-code 1 --severity HIGH,CRITICAL ./backend
+      displayName: Scan backend (SCA + secrets)
       
-      - script: |
-          sleep 10
-          STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-backend" | jq -r '.projectStatus.status')
-          echo "Quality Gate Status: $STATUS"
-          if [ "$STATUS" != "OK" ]; then
-            echo "Quality Gate Failed"
-            exit 1
+    - task: Docker@2
+      displayName: Build backend image
+      inputs:
+        command: build
+        repository: $(backendImage)
+        dockerfile: backend/backend/backend/Dockerfile
+        containerRegistry: acr-connection
+        tags: |
+          $(tag)
+    
+    - script: |
+        if ! command -v trivy &> /dev/null
+        then
+            sudo apt-get update
+            sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+            wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+            echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+            sudo apt-get update
+            sudo apt-get install -y trivy
+            else
+            echo "Trivy already installed"
           fi
-        displayName: Enforce Sonar Quality Gate
-      
-      - script: |
-          trivy fs --exit-code 1 --severity HIGH,CRITICAL ./backend
-        displayName: Scan backend (SCA + secrets)
-      
-      - task: Docker@2
-        displayName: Build backend image
-        inputs:
-          command: build
-          repository: $(backendImage)
-          dockerfile: backend/backend/backend/Dockerfile
-          containerRegistry: acr-connection
-          tags: |
-            $(tag)
-      
-      - script: |
-          if ! command -v trivy &> /dev/null
-          then
-              sudo apt-get update
-              sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-              wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-              echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
-              sudo apt-get update
-              sudo apt-get install -y trivy
-              else
-              echo "Trivy already installed"
-            fi
-        displayName: Install Trivy
-      
-      - script: |
-          trivy image --ignorefile .trivyignore --severity CRITICAL \
-            --exit-code 1 -f table   -o backend-report.txt \
-            $(acrLoginServer)/$(backendImage):$(tag)
-        displayName: Scan Backend Image
-      
-      - publish: backend-report.txt
-        artifact: trivy-backend
-        condition: always()
+      displayName: Install Trivy
+        
+    - script: |
+        trivy image --ignorefile .trivyignore --severity CRITICAL \
+          --exit-code 1 -f table   -o backend-report.txt \
+          $(acrLoginServer)/$(backendImage):$(tag)
+      displayName: Scan Backend Image
+        
+    - publish: backend-report.txt
+      artifact: trivy-backend
+      condition: always()
 
-      - task: Docker@2
-        displayName: Push backend image
-        inputs:
-          command: push
-          dockerfile: backend/backend/backend/Dockerfile
-          repository: $(backendImage)
-          containerRegistry: acr-connection
-          tags: |
-            $(tag)
+    - task: Docker@2
+      displayName: Push backend image
+      inputs:
+        command: push
+        dockerfile: backend/backend/backend/Dockerfile
+        repository: $(backendImage)
+        containerRegistry: acr-connection
+        tags: |
+          $(tag)
 
 
 
@@ -153,76 +153,76 @@ stages:
     steps:
     - checkout: self
     - script: |
-          npm install --prefix frontend
-          npm run build --prefix frontend
-        displayName: Build frontend for SonarQube
+        npm install --prefix frontend
+        npm run build --prefix frontend
+      displayName: Build frontend for SonarQube
 
-      - script: |
-          sonar-scanner \
-            -Dsonar.projectKey=three-tier-frontend \
-            -Dsonar.projectName=three-tier-frontend \
-            -Dsonar.sources=frontend/src \
-            -Dsonar.host.url="$(SONAR_HOST_URL)" \
-            -Dsonar.token="$(SONAR_TOKEN)"
-        displayName: SonarQube scan frontend
-      - script: |
-          STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-frontend" | jq -r '.projectStatus.status')
+    - script: |
+        sonar-scanner \
+          -Dsonar.projectKey=three-tier-frontend \
+          -Dsonar.projectName=three-tier-frontend \
+          -Dsonar.sources=frontend/src \
+          -Dsonar.host.url="$(SONAR_HOST_URL)" \
+          -Dsonar.token="$(SONAR_TOKEN)"
+      displayName: SonarQube scan frontend
+    - script: |
+        STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-frontend" | jq -r '.projectStatus.status')
 
-          echo "Frontend Quality Gate Status: $STATUS"
+        echo "Frontend Quality Gate Status: $STATUS"
 
-          if [ "$STATUS" != "OK" ]; then
-            echo "Frontend Quality Gate Failed"
-            exit 1
+        if [ "$STATUS" != "OK" ]; then
+          echo "Frontend Quality Gate Failed"
+          exit 1
+        fi
+      displayName: Enforce Frontend Quality Gate
+    
+    - script: |
+        trivy fs --exit-code 1 --severity HIGH,CRITICAL ./frontend
+      displayName: Scan frontend (SCA + secrets)
+    
+    - task: Docker@2
+      displayName: Build frontend image
+      inputs:
+        command: build
+        repository: $(frontendImage)
+        dockerfile: frontend/Dockerfile
+        containerRegistry: acr-connection
+        tags: |
+          $(tag)
+    
+    - script: |
+        if ! command -v trivy &> /dev/null
+        then
+            sudo apt-get update
+            sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+            wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+            echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+            sudo apt-get update
+            sudo apt-get install -y trivy
+            else
+            echo "Trivy already installed"
           fi
-        displayName: Enforce Frontend Quality Gate
-      
-      - script: |
-          trivy fs --exit-code 1 --severity HIGH,CRITICAL ./frontend
-        displayName: Scan frontend (SCA + secrets)
-      
-      - task: Docker@2
-        displayName: Build frontend image
-        inputs:
-          command: build
-          repository: $(frontendImage)
-          dockerfile: frontend/Dockerfile
-          containerRegistry: acr-connection
-          tags: |
-            $(tag)
-      
-      - script: |
-          if ! command -v trivy &> /dev/null
-          then
-              sudo apt-get update
-              sudo apt-get install -y wget apt-transport-https gnupg lsb-release
-              wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
-              echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
-              sudo apt-get update
-              sudo apt-get install -y trivy
-              else
-              echo "Trivy already installed"
-            fi
-        displayName: Install Trivy
+      displayName: Install Trivy
 
-      - script: |
-          trivy image --ignorefile .trivyignore --severity CRITICAL \
-            --exit-code 1 -f table   -o frontend-report.txt \
-            $(acrLoginServer)/$(frontendImage):$(tag)
+    - script: |
+        trivy image --ignorefile .trivyignore --severity CRITICAL \
+          --exit-code 1 -f table   -o frontend-report.txt \
+          $(acrLoginServer)/$(frontendImage):$(tag)
 
-        displayName: Scan Frontend Image
-      - publish: frontend-report.txt
-        artifact: trivy-frontend
-        condition: always()
-      
-      - task: Docker@2
-        displayName: Push frontend image
-        inputs:
-          command: push
-          dockerfile: frontend/Dockerfile
-          repository: $(frontendImage)
-          containerRegistry: acr-connection
-          tags: |
-            $(tag)
+      displayName: Scan Frontend Image
+    - publish: frontend-report.txt
+      artifact: trivy-frontend
+      condition: always()
+    
+    - task: Docker@2
+      displayName: Push frontend image
+      inputs:
+        command: push
+        dockerfile: frontend/Dockerfile
+        repository: $(frontendImage)
+        containerRegistry: acr-connection
+        tags: |
+          $(tag)
 
 - stage: UpdateGitOps
   displayName: Update GitOps Helm values
