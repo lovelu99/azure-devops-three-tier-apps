@@ -1,0 +1,552 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - backend/*
+      - frontend/*
+      - azure-pipelines.yml
+pool:
+  name: Default 
+
+
+
+variables:
+  acrLoginServer: 'loveluacr.azurecr.io'
+  backendImage: 'backend-api'
+  frontendImage: 'frontend'
+  tag: '$(Build.BuildId)'
+  namespace: 'three-tier'
+  aksResourceGroup: 'dev'
+  aksCluster: 'aks-3tier'
+  GITOPS_REPO: https://github.com/lovelu99/azure-devops-three-tier-gitops.git
+  GITOPS_PATH: apps/three-tier
+  VALUES_FILE: values-dev.yaml
+
+stages:
+- stage: DetectChanges
+  displayName: Detect changed app
+  jobs:
+  - job: detect
+    steps:
+    - checkout: self
+      fetchDepth: 0
+
+    - script: |
+        set -e
+
+        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD || true)
+
+        echo "Changed files:"
+        echo "$CHANGED_FILES"
+
+        BACKEND_CHANGED=false
+        FRONTEND_CHANGED=false
+
+        if echo "$CHANGED_FILES" | grep -q '^backend/'; then
+          BACKEND_CHANGED=true
+        fi
+
+        if echo "$CHANGED_FILES" | grep -q '^frontend/'; then
+          FRONTEND_CHANGED=true
+        fi
+
+        echo "##vso[task.setvariable variable=backendChanged;isOutput=true]$BACKEND_CHANGED"
+        echo "##vso[task.setvariable variable=frontendChanged;isOutput=true]$FRONTEND_CHANGED"
+      name: detectChanges
+      displayName: Detect backend/frontend changes
+
+- stage: BuildBackend
+  displayName: Build backend image
+  dependsOn: DetectChanges
+  condition: eq(dependencies.DetectChanges.outputs['detect.detectChanges.backendChanged'], 'true')
+  jobs:
+  - job: build_backend
+    steps:
+    - checkout: self
+    - script: |
+          dotnet tool install --global dotnet-sonarscanner || true
+          export PATH="$PATH:$HOME/.dotnet/tools"
+
+          dotnet sonarscanner begin \
+            /k:"three-tier-backend" \
+            /n:"three-tier-backend" \
+            /d:sonar.sources="backend" \
+            /d:sonar.exclusions="frontend/**,helm/**,k8s/**,pipelines/**,**/bin/**,**/obj/**" \
+            /d:sonar.host.url="$(SONAR_HOST_URL)" \
+            /d:sonar.token="$(SONAR_TOKEN)"
+
+          dotnet restore backend/backend/backend/backend.csproj
+          dotnet build backend/backend/backend/backend.csproj --configuration Release --no-restore
+
+          dotnet sonarscanner end \
+            /d:sonar.token="$(SONAR_TOKEN)"
+        displayName: SonarQube scan backend
+      
+      - script: |
+          sleep 10
+          STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-backend" | jq -r '.projectStatus.status')
+          echo "Quality Gate Status: $STATUS"
+          if [ "$STATUS" != "OK" ]; then
+            echo "Quality Gate Failed"
+            exit 1
+          fi
+        displayName: Enforce Sonar Quality Gate
+      
+      - script: |
+          trivy fs --exit-code 1 --severity HIGH,CRITICAL ./backend
+        displayName: Scan backend (SCA + secrets)
+      
+      - task: Docker@2
+        displayName: Build backend image
+        inputs:
+          command: build
+          repository: $(backendImage)
+          dockerfile: backend/backend/backend/Dockerfile
+          containerRegistry: acr-connection
+          tags: |
+            $(tag)
+      
+      - script: |
+          if ! command -v trivy &> /dev/null
+          then
+              sudo apt-get update
+              sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+              wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+              echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+              sudo apt-get update
+              sudo apt-get install -y trivy
+              else
+              echo "Trivy already installed"
+            fi
+        displayName: Install Trivy
+      
+      - script: |
+          trivy image --ignorefile .trivyignore --severity CRITICAL \
+            --exit-code 1 -f table   -o backend-report.txt \
+            $(acrLoginServer)/$(backendImage):$(tag)
+        displayName: Scan Backend Image
+      
+      - publish: backend-report.txt
+        artifact: trivy-backend
+        condition: always()
+
+      - task: Docker@2
+        displayName: Push backend image
+        inputs:
+          command: push
+          dockerfile: backend/backend/backend/Dockerfile
+          repository: $(backendImage)
+          containerRegistry: acr-connection
+          tags: |
+            $(tag)
+
+
+
+- stage: BuildFrontend
+  displayName: Build frontend image
+  dependsOn: DetectChanges
+  condition: eq(dependencies.DetectChanges.outputs['detect.detectChanges.frontendChanged'], 'true')
+  jobs:
+  - job: build_frontend
+    steps:
+    - checkout: self
+    - script: |
+          npm install --prefix frontend
+          npm run build --prefix frontend
+        displayName: Build frontend for SonarQube
+
+      - script: |
+          sonar-scanner \
+            -Dsonar.projectKey=three-tier-frontend \
+            -Dsonar.projectName=three-tier-frontend \
+            -Dsonar.sources=frontend/src \
+            -Dsonar.host.url="$(SONAR_HOST_URL)" \
+            -Dsonar.token="$(SONAR_TOKEN)"
+        displayName: SonarQube scan frontend
+      - script: |
+          STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-frontend" | jq -r '.projectStatus.status')
+
+          echo "Frontend Quality Gate Status: $STATUS"
+
+          if [ "$STATUS" != "OK" ]; then
+            echo "Frontend Quality Gate Failed"
+            exit 1
+          fi
+        displayName: Enforce Frontend Quality Gate
+      
+      - script: |
+          trivy fs --exit-code 1 --severity HIGH,CRITICAL ./frontend
+        displayName: Scan frontend (SCA + secrets)
+      
+      - task: Docker@2
+        displayName: Build frontend image
+        inputs:
+          command: build
+          repository: $(frontendImage)
+          dockerfile: frontend/Dockerfile
+          containerRegistry: acr-connection
+          tags: |
+            $(tag)
+      
+      - script: |
+          if ! command -v trivy &> /dev/null
+          then
+              sudo apt-get update
+              sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+              wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+              echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+              sudo apt-get update
+              sudo apt-get install -y trivy
+              else
+              echo "Trivy already installed"
+            fi
+        displayName: Install Trivy
+
+      - script: |
+          trivy image --ignorefile .trivyignore --severity CRITICAL \
+            --exit-code 1 -f table   -o frontend-report.txt \
+            $(acrLoginServer)/$(frontendImage):$(tag)
+
+        displayName: Scan Frontend Image
+      - publish: frontend-report.txt
+        artifact: trivy-frontend
+        condition: always()
+      
+      - task: Docker@2
+        displayName: Push frontend image
+        inputs:
+          command: push
+          dockerfile: frontend/Dockerfile
+          repository: $(frontendImage)
+          containerRegistry: acr-connection
+          tags: |
+            $(tag)
+
+- stage: UpdateGitOps
+  displayName: Update GitOps Helm values
+  dependsOn:
+    - DetectChanges
+    - BuildBackend
+    - BuildFrontend
+  condition: |
+    or(
+      eq(dependencies.DetectChanges.outputs['detect.detectChanges.backendChanged'], 'true'),
+      eq(dependencies.DetectChanges.outputs['detect.detectChanges.frontendChanged'], 'true')
+    )
+  jobs:
+  - job: update_gitops
+    steps:
+    - script: |
+        set -e
+
+        IMAGE_TAG=$(Build.BuildId)
+
+        git config --global user.email "azuredevops@local"
+        git config --global user.name "Azure DevOps Pipeline"
+
+        git clone https://$(GITOPS_PAT)@github.com/lovelu99/azure-devops-three-tier-gitops.git
+
+        cd three-tier-gitops/$(GITOPS_PATH)
+
+        BACKEND_CHANGED="$(dependencies.DetectChanges.outputs['detect.detectChanges.backendChanged'])"
+        FRONTEND_CHANGED="$(dependencies.DetectChanges.outputs['detect.detectChanges.frontendChanged'])"
+
+        if [ "$BACKEND_CHANGED" = "true" ]; then
+          yq -i '.backend.image.tag = strenv(IMAGE_TAG)' $(VALUES_FILE)
+        fi
+
+        if [ "$FRONTEND_CHANGED" = "true" ]; then
+          yq -i '.frontend.image.tag = strenv(IMAGE_TAG)' $(VALUES_FILE)
+        fi
+
+        git add $(VALUES_FILE)
+
+        if git diff --cached --quiet; then
+          echo "No GitOps changes to commit"
+          exit 0
+        fi
+
+        git commit -m "Update image tag to $IMAGE_TAG"
+        git push origin main
+      displayName: Update GitOps repo
+
+
+# - stage: Build
+#   displayName: Build and Push Images
+#   jobs:
+#   - job: BuildPush
+#     pool:
+#       #vmImage: ubuntu-latest
+#       name: Default
+
+#     steps:
+#       - checkout: self
+#         fetchDepth: 0
+#       # - task: SonarQubePrepare@7
+#       #   displayName: Prepare SonarQube analysis
+#       #   inputs:
+#       #     SonarQube: 'sonarqube-connection'
+#       #     scannerMode: 'dotnet'
+#       #     projectKey: 'three-tier-backend'
+#       #     projectName: 'three-tier-backend'
+#       #     extraProperties: |
+#       #       sonar.scanner.skipJreProvisioning=true
+#       #   env:
+#       #     SONAR_BRANCH_AUTOCONFIG_DISABLED: 'true'
+
+#       # - script: |
+#       #     dotnet restore backend/backend/backend/backend.csproj
+#       #     dotnet build backend/backend/backend/backend.csproj --configuration Release --no-restore
+#       #   displayName: Build backend for SonarQube
+#       - script: |
+#           dotnet tool install --global dotnet-sonarscanner || true
+#           export PATH="$PATH:$HOME/.dotnet/tools"
+
+#           dotnet sonarscanner begin \
+#             /k:"three-tier-backend" \
+#             /n:"three-tier-backend" \
+#             /d:sonar.sources="backend" \
+#             /d:sonar.exclusions="frontend/**,helm/**,k8s/**,pipelines/**,**/bin/**,**/obj/**" \
+#             /d:sonar.host.url="$(SONAR_HOST_URL)" \
+#             /d:sonar.token="$(SONAR_TOKEN)"
+
+#           dotnet restore backend/backend/backend/backend.csproj
+#           dotnet build backend/backend/backend/backend.csproj --configuration Release --no-restore
+
+#           dotnet sonarscanner end \
+#             /d:sonar.token="$(SONAR_TOKEN)"
+#         displayName: SonarQube scan backend
+      
+#       - script: |
+#           sleep 10
+#           STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-backend" | jq -r '.projectStatus.status')
+#           echo "Quality Gate Status: $STATUS"
+#           if [ "$STATUS" != "OK" ]; then
+#             echo "Quality Gate Failed"
+#             exit 1
+#           fi
+#         displayName: Enforce Sonar Quality Gate
+
+#       - script: |
+#           npm install --prefix frontend
+#           npm run build --prefix frontend
+#         displayName: Build frontend for SonarQube
+
+        
+#       - script: |
+#           sonar-scanner \
+#             -Dsonar.projectKey=three-tier-frontend \
+#             -Dsonar.projectName=three-tier-frontend \
+#             -Dsonar.sources=frontend/src \
+#             -Dsonar.host.url="$(SONAR_HOST_URL)" \
+#             -Dsonar.token="$(SONAR_TOKEN)"
+#         displayName: SonarQube scan frontend
+#       - script: |
+#           STATUS=$(curl -s -u $(SONAR_TOKEN): "$(SONAR_HOST_URL)/api/qualitygates/project_status?projectKey=three-tier-frontend" | jq -r '.projectStatus.status')
+
+#           echo "Frontend Quality Gate Status: $STATUS"
+
+#           if [ "$STATUS" != "OK" ]; then
+#             echo "Frontend Quality Gate Failed"
+#             exit 1
+#           fi
+#         displayName: Enforce Frontend Quality Gate
+#       - script: |
+#           trivy fs --exit-code 1 --severity HIGH,CRITICAL ./backend
+#         displayName: Scan backend (SCA + secrets)
+#       - script: |
+#           trivy fs --exit-code 1 --severity HIGH,CRITICAL ./frontend
+#         displayName: Scan frontend (SCA + secrets)
+        
+#       - task: Docker@2
+#         displayName: Build backend image
+#         inputs:
+#           command: build
+#           repository: $(backendImage)
+#           dockerfile: backend/backend/backend/Dockerfile
+#           containerRegistry: acr-connection
+#           tags: |
+#             $(tag)
+
+#       - task: Docker@2
+#         displayName: Build frontend image
+#         inputs:
+#           command: build
+#           repository: $(frontendImage)
+#           dockerfile: frontend/Dockerfile
+#           containerRegistry: acr-connection
+#           tags: |
+#             $(tag)
+#       # Install Trivy
+#       - script: |
+#           if ! command -v trivy &> /dev/null
+#           then
+#               sudo apt-get update
+#               sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+#               wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+#               echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+#               sudo apt-get update
+#               sudo apt-get install -y trivy
+#               else
+#               echo "Trivy already installed"
+#             fi
+#         displayName: Install Trivy
+#       #  Scan Backend
+#       - script: |
+#           trivy image --ignorefile .trivyignore \
+#             --severity CRITICAL \
+#             -f table \
+#             -o backend-report.txt \
+#             $(acrLoginServer)/$(backendImage):$(tag)
+
+#           trivy image --ignorefile .trivyignore \
+#           --exit-code 1 \
+#           --severity CRITICAL \
+#           $(acrLoginServer)/$(backendImage):$(tag)
+#         displayName: Scan Backend Image
+      
+#       - publish: backend-report.txt
+#         artifact: trivy-backend
+#         condition: always()
+        
+#       #  Scan Frontend
+#       - script: |
+#           trivy image --ignorefile .trivyignore \
+#             --severity CRITICAL \
+#             -f table \
+#             -o frontend-report.txt \
+#             $(acrLoginServer)/$(frontendImage):$(tag)
+
+#           trivy image --ignorefile .trivyignore \
+#             --exit-code 1 \
+#             --severity CRITICAL \
+#             $(acrLoginServer)/$(frontendImage):$(tag)
+#         displayName: Scan Frontend Image
+#       - publish: frontend-report.txt
+#         artifact: trivy-frontend
+#         condition: always()
+
+#       - task: Docker@2
+#         displayName: Push backend image
+#         inputs:
+#           command: push
+#           dockerfile: backend/backend/backend/Dockerfile
+#           repository: $(backendImage)
+#           containerRegistry: acr-connection
+#           tags: |
+#             $(tag)
+
+#       - task: Docker@2
+#         displayName: Push frontend image
+#         inputs:
+#           command: push
+#           dockerfile: frontend/Dockerfile
+#           repository: $(frontendImage)
+#           containerRegistry: acr-connection
+#           tags: |
+#             $(tag)
+# - stage: Helm_Validate
+#   displayName: Helm Lint, Template Validation and Security Scan
+#   dependsOn: Build
+#   jobs:
+#   - job: ValidateHelm
+#     displayName: Validate Helm Chart
+#     pool:
+#       name: Default
+
+#     steps:
+#     - checkout: self
+
+#     - script: |
+#         helm lint helm/three-tier-app
+#       displayName: Helm lint
+
+#     - script: |
+#         helm template three-tier-app helm/three-tier-app \
+#           -n $(namespace) \
+#           --set backend.image.repository=$(acrLoginServer)/$(backendImage) \
+#           --set backend.image.tag=$(tag) \
+#           --set frontend.image.repository=$(acrLoginServer)/$(frontendImage) \
+#           --set frontend.image.tag=$(tag) \
+#           > rendered-manifests.yaml
+#       displayName: Render Helm templates
+
+#     - script: |
+#         kubectl apply --dry-run=client -f rendered-manifests.yaml
+#       displayName: Validate Kubernetes YAML
+
+#     - script: |
+#         trivy config --exit-code 1 --severity HIGH,CRITICAL rendered-manifests.yaml
+#       displayName: Security scan rendered Kubernetes manifests
+
+#     - publish: rendered-manifests.yaml
+#       artifact: rendered-manifests
+#       displayName: Publish rendered manifests
+
+# - stage: Deploy
+#   displayName: Deploy to AKS with Helm
+#   dependsOn: Helm_Validate
+#   jobs:
+#   - job: DeployAKS
+#     pool:
+#       name: Default
+
+#     steps:
+#     - checkout: self
+
+#     - script: |
+#         az login --identity
+
+#         az aks get-credentials \
+#           --resource-group $(aksResourceGroup) \
+#           --name $(aksCluster) \
+#           --overwrite-existing
+
+#         helm upgrade --install three-tier-app ./helm/three-tier-app \
+#           -n $(namespace) \
+#           --create-namespace \
+#           --set backend.image.repository=$(acrLoginServer)/$(backendImage) \
+#           --set backend.image.tag=$(tag) \
+#           --set frontend.image.repository=$(acrLoginServer)/$(frontendImage) \
+#           --set frontend.image.tag=$(tag)
+#       displayName: Deploy three-tier app with Helm
+
+# # - stage: Deploy
+# #   displayName: Deploy to AKS
+# #   dependsOn: Build
+# #   jobs:
+# #   - job: DeployAKS
+# #     pool:
+# #       #vmImage: ubuntu-latest
+# #       name: Default
+
+# #     steps:
+# #     - checkout: self
+
+# #     - task: KubernetesManifest@1
+# #       displayName: Deploy manifests to AKS
+# #       inputs:
+# #         action: deploy
+# #         connectionType: azureResourceManager
+# #         azureSubscriptionConnection: azure-rm-connection
+# #         azureResourceGroup: $(aksResourceGroup)
+# #         kubernetesCluster: $(aksCluster)
+# #         namespace: $(namespace)
+# #         manifests: |
+# #           k8s/namespace.yaml
+# #           k8s/backend-serviceaccount.yaml
+# #           k8s/secretproviderclass.yaml
+# #           k8s/backend-deployment.yaml
+# #           k8s/backend-service.yaml
+# #           k8s/frontend-deployment.yaml
+# #           k8s/frontend-service.yaml
+# #           k8s/ingress.yaml
+# #           k8s/hpa.yaml
+# #           k8s/pdb.yaml
+# #           k8s/networkpolicy.yaml
+
+# #         containers: |
+# #           $(acrLoginServer)/$(backendImage):$(tag)
+# #           $(acrLoginServer)/$(frontendImage):$(tag)

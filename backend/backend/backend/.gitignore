@@ -1,0 +1,49 @@
+﻿# 🔹 Build output
+bin/
+obj/
+
+# 🔹 User-specific files
+*.user
+*.rsuser
+*.suo
+
+# 🔹 Visual Studio files
+.vs/
+*.vscode/
+*.vs/*
+
+# 🔹 Publish output
+publish/
+*.publish/
+
+# 🔹 Logs
+*.log
+
+# 🔹 OS files
+.DS_Store
+Thumbs.db
+
+# 🔹 Environment files
+.env
+
+# 🔹 Secrets (VERY IMPORTANT)
+appsettings.Development.json
+appsettings.Local.json
+
+# 🔹 Azure / deployment artifacts
+*.azurePubxml
+
+# 🔹 Node (for your React frontend)
+node_modules/
+build/
+dist/
+
+# 🔹 Docker
+docker-compose.override.yml
+
+# 🔹 Test results
+TestResults/
+
+# 🔹 NuGet
+*.nupkg
+packages/

@@ -1,0 +1,4 @@
+# Base image vulnerabilities (Debian 12)
+# No fix available as of now
+CVE-2023-45853
+CVE-2026-0861
