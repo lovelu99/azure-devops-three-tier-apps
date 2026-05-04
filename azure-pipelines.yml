@@ -245,8 +245,8 @@ stages:
 
         git config --global user.email "azuredevops@local"
         git config --global user.name "Azure DevOps Pipeline"
-
-        git clone https://$(GITOPS_PAT)@github.com/lovelu99/azure-devops-three-tier-gitops.git
+        
+        git clone https://lovelu99:$GITOPS_PAT@github.com/lovelu99/azure-devops-three-tier-gitops.git
 
         cd three-tier-gitops/$(GITOPS_PATH)
 
